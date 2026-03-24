@@ -123,6 +123,8 @@ def create_comment_tools(app_name: str, file_id_param: str):
 
             Actions:
               - create: Create a new comment. Requires comment_content.
+                Note: The Drive API cannot anchor comments to arbitrary text;
+                Sheets comments are cell-scoped via the API.
               - reply: Reply to a comment. Requires comment_id and comment_content.
               - resolve: Resolve a comment. Requires comment_id.
             """
@@ -155,6 +157,8 @@ def create_comment_tools(app_name: str, file_id_param: str):
 
             Actions:
               - create: Create a new comment. Requires comment_content.
+                Note: The Drive API cannot anchor comments to arbitrary text;
+                Slides comments are element-scoped via the API.
               - reply: Reply to a comment. Requires comment_id and comment_content.
               - resolve: Resolve a comment. Requires comment_id.
             """
