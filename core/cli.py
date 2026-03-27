@@ -17,12 +17,14 @@ import json
 import logging
 import os
 import stat
+import string
 import sys
 from typing import Any
 
 from cryptography.fernet import Fernet
 from fastmcp import Client
 from fastmcp.client.auth import OAuth
+from key_value.aio._utils.sanitization import HybridSanitizationStrategy
 from key_value.aio.stores.filetree import FileTreeStore
 from key_value.aio.wrappers.encryption import FernetEncryptionWrapper
 
@@ -55,8 +57,14 @@ def _get_token_storage() -> FernetEncryptionWrapper:
             os.close(fd)
         os.chmod(KEY_PATH, stat.S_IRUSR | stat.S_IWUSR)
 
+    _safe_chars = string.ascii_letters + string.digits + "-_."
     return FernetEncryptionWrapper(
-        key_value=FileTreeStore(data_directory=TOKEN_DIR),
+        key_value=FileTreeStore(
+            data_directory=TOKEN_DIR,
+            key_sanitization_strategy=HybridSanitizationStrategy(
+                allowed_characters=_safe_chars,
+            ),
+        ),
         fernet=Fernet(key),
     )
 
@@ -103,7 +111,7 @@ async def _call_tool(url: str, tool_name: str, raw_args: list[str]) -> None:
 
     async with Client(url, auth=_build_oauth()) as client:
         result = await client.call_tool(tool_name, kwargs)
-        for block in result:
+        for block in result.content:
             if hasattr(block, "text"):
                 try:
                     parsed = json.loads(block.text)
