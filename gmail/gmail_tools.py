@@ -1215,6 +1215,17 @@ async def get_gmail_messages_content_batch(
                 # Brief delay between requests to allow connection cleanup
                 await asyncio.sleep(GMAIL_REQUEST_DELAY)
 
+        raw_contents: Optional[Dict[str, str]] = None
+        if format != "metadata" and body_format == "raw":
+            raw_message_ids = [
+                mid for mid in chunk_ids if not results.get(mid, {}).get("error")
+            ]
+            raw_contents = await _fetch_raw_message_contents(
+                service,
+                raw_message_ids,
+                log_prefix="get_gmail_messages_content_batch",
+            )
+
         # Process results for this chunk
         for mid in chunk_ids:
             entry = results.get(mid, {"data": None, "error": "No result"})
@@ -1241,16 +1252,12 @@ async def get_gmail_messages_content_batch(
                 else:
                     headers = _extract_headers(payload, GMAIL_METADATA_HEADERS)
                     if body_format == "raw":
-                        _, raw_message, raw_error = await _fetch_message_with_retry(
-                            service,
-                            message_id=mid,
-                            message_format="raw",
-                            log_prefix="get_gmail_messages_content_batch",
-                        )
                         body_data = (
-                            _decode_raw_mime_content(raw_message.get("raw", ""))
-                            if raw_message
-                            else f"[Failed to fetch raw MIME: {raw_error}]"
+                            raw_contents.get(
+                                mid, "[Failed to fetch raw MIME: No result]"
+                            )
+                            if raw_contents
+                            else "[Failed to fetch raw MIME: No result]"
                         )
                         body_label = "RAW MIME"
                     else:
