@@ -18,6 +18,16 @@ import httpx
 logger = logging.getLogger(__name__)
 
 
+def redact_url(url: str) -> str:
+    """Return a redacted URL safe for logs and exceptions."""
+    parsed_url = urlparse(url)
+    if not parsed_url.hostname:
+        return "<redacted>"
+
+    path = parsed_url.path or "/"
+    return f"{parsed_url.hostname}{path}"
+
+
 def resolve_and_validate_host(hostname: str) -> list[str]:
     """
     Resolve a hostname to IP addresses and validate none are private/internal.
@@ -130,10 +140,13 @@ async def fetch_url_with_pinned_ip(url: str) -> httpx.Response:
     This prevents DNS rebinding between validation and the outbound connection.
     """
     parsed_url = urlparse(url)
+    redacted_url = redact_url(url)
     if parsed_url.scheme not in ("http", "https"):
-        raise ValueError(f"Only http:// and https:// are supported: {url}")
+        raise ValueError(
+            f"Only http:// and https:// are supported: {redacted_url}"
+        )
     if not parsed_url.hostname:
-        raise ValueError(f"Invalid URL: missing hostname ({url})")
+        raise ValueError(f"Invalid URL: missing hostname ({redacted_url})")
 
     resolved_ips = validate_url_not_internal(url)
     host_header = format_host_header(
@@ -162,7 +175,8 @@ async def fetch_url_with_pinned_ip(url: str) -> httpx.Response:
             )
 
     raise Exception(
-        f"Failed to fetch URL after trying {len(resolved_ips)} validated IP(s): {url}"
+        "Failed to fetch URL after trying "
+        f"{len(resolved_ips)} validated IP(s): {redacted_url}"
     ) from last_error
 
 
@@ -188,11 +202,14 @@ async def ssrf_safe_fetch(url: str) -> httpx.Response:
 
     for _ in range(max_redirects):
         resp = await fetch_url_with_pinned_ip(current_url)
+        redacted_current_url = redact_url(current_url)
 
         if resp.status_code in (301, 302, 303, 307, 308):
             location = resp.headers.get("location")
             if not location:
-                raise Exception(f"Redirect with no Location header from {current_url}")
+                raise Exception(
+                    f"Redirect with no Location header from {redacted_current_url}"
+                )
 
             # Resolve relative redirects against the current URL
             location = urljoin(current_url, location)
@@ -208,7 +225,9 @@ async def ssrf_safe_fetch(url: str) -> httpx.Response:
 
         return resp
 
-    raise Exception(f"Too many redirects (max {max_redirects}) fetching {url}")
+    raise Exception(
+        f"Too many redirects (max {max_redirects}) fetching {redact_url(url)}"
+    )
 
 
 @asynccontextmanager
@@ -230,10 +249,13 @@ async def ssrf_safe_stream(url: str) -> AsyncIterator[httpx.Response]:
     # Resolve redirects manually so every hop is SSRF-validated
     for _ in range(max_redirects):
         parsed = urlparse(current_url)
+        redacted_url = redact_url(current_url)
         if parsed.scheme not in ("http", "https"):
-            raise ValueError(f"Only http:// and https:// are supported: {current_url}")
+            raise ValueError(
+                f"Only http:// and https:// are supported: {redacted_url}"
+            )
         if not parsed.hostname:
-            raise ValueError(f"Invalid URL: missing hostname ({current_url})")
+            raise ValueError(f"Invalid URL: missing hostname ({redacted_url})")
 
         resolved_ips = validate_url_not_internal(current_url)
         host_header = format_host_header(parsed.hostname, parsed.scheme, parsed.port)
@@ -266,7 +288,7 @@ async def ssrf_safe_stream(url: str) -> AsyncIterator[httpx.Response]:
         if resp is None:
             raise Exception(
                 f"Failed to fetch URL after trying {len(resolved_ips)} validated IP(s): "
-                f"{current_url}"
+                f"{redacted_url}"
             ) from last_error
 
         if resp.status_code in (301, 302, 303, 307, 308):
@@ -274,7 +296,9 @@ async def ssrf_safe_stream(url: str) -> AsyncIterator[httpx.Response]:
             await resp.aclose()
             await client.aclose()
             if not location:
-                raise Exception(f"Redirect with no Location header from {current_url}")
+                raise Exception(
+                    f"Redirect with no Location header from {redacted_url}"
+                )
             location = urljoin(current_url, location)
             redirect_parsed = urlparse(location)
             if redirect_parsed.scheme not in ("http", "https"):
@@ -292,4 +316,6 @@ async def ssrf_safe_stream(url: str) -> AsyncIterator[httpx.Response]:
             await client.aclose()
         return
 
-    raise Exception(f"Too many redirects (max {max_redirects}) fetching {url}")
+    raise Exception(
+        f"Too many redirects (max {max_redirects}) fetching {redact_url(url)}"
+    )

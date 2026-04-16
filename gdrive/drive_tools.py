@@ -31,7 +31,6 @@ from core.utils import (
 )
 from core.server import server
 from core.config import get_transport_mode
-from core.http_utils import ssrf_safe_fetch as _ssrf_safe_fetch
 from core.http_utils import ssrf_safe_stream as _ssrf_safe_stream
 from gdrive.drive_helpers import (
     DRIVE_QUERY_PATTERNS,
@@ -53,6 +52,29 @@ logger = logging.getLogger(__name__)
 DOWNLOAD_CHUNK_SIZE_BYTES = 256 * 1024  # 256 KB
 UPLOAD_CHUNK_SIZE_BYTES = 5 * 1024 * 1024  # 5 MB (Google recommended minimum)
 MAX_DOWNLOAD_BYTES = 2 * 1024 * 1024 * 1024  # 2 GB safety limit for URL downloads
+
+
+async def _download_url_to_bytes(url: str) -> tuple[bytes, Optional[str]]:
+    """Download a remote file into memory with bounded streaming."""
+    total_bytes = 0
+    chunks: list[bytes] = []
+
+    async with _ssrf_safe_stream(url) as resp:
+        if resp.status_code != 200:
+            raise Exception(
+                f"Failed to fetch file from URL: {url} (status {resp.status_code})"
+            )
+
+        content_type = resp.headers.get("Content-Type")
+        async for chunk in resp.aiter_bytes(chunk_size=DOWNLOAD_CHUNK_SIZE_BYTES):
+            total_bytes += len(chunk)
+            if total_bytes > MAX_DOWNLOAD_BYTES:
+                raise Exception(
+                    f"Download exceeded {MAX_DOWNLOAD_BYTES} byte limit"
+                )
+            chunks.append(chunk)
+
+    return b"".join(chunks), content_type
 
 
 @server.tool()
@@ -736,14 +758,8 @@ async def create_drive_file(
         elif parsed_url.scheme in ("http", "https"):
             # when running in stateless mode, deployment may not have access to local file system
             if is_stateless_mode():
-                resp = await _ssrf_safe_fetch(fileUrl)
-                if resp.status_code != 200:
-                    raise Exception(
-                        f"Failed to fetch file from URL: {fileUrl} (status {resp.status_code})"
-                    )
-                file_data = resp.content
+                file_data, content_type = await _download_url_to_bytes(fileUrl)
                 # Try to get MIME type from Content-Type header
-                content_type = resp.headers.get("Content-Type")
                 if content_type and content_type != "application/octet-stream":
                     mime_type = content_type
                     file_metadata["mimeType"] = content_type
@@ -1027,12 +1043,7 @@ async def import_to_google_doc(
             raise ValueError(f"file_url must be http:// or https://, got: {file_url}")
 
         # SSRF protection: block internal/private network URLs and validate redirects
-        resp = await _ssrf_safe_fetch(file_url)
-        if resp.status_code != 200:
-            raise Exception(
-                f"Failed to fetch file from URL: {file_url} (status {resp.status_code})"
-            )
-        file_data = resp.content
+        file_data, _content_type = await _download_url_to_bytes(file_url)
 
         logger.info(
             f"[import_to_google_doc] Downloaded from URL: {len(file_data)} bytes"

@@ -163,3 +163,35 @@ async def test_ssrf_safe_fetch_rejects_disallowed_redirect_scheme(monkeypatch):
 
     with pytest.raises(ValueError, match="Redirect to disallowed scheme"):
         await http_utils.ssrf_safe_fetch("https://example.com/start")
+
+
+@pytest.mark.asyncio
+async def test_fetch_url_with_pinned_ip_redacts_secret_query_in_errors():
+    with pytest.raises(ValueError) as exc_info:
+        await http_utils.fetch_url_with_pinned_ip(
+            "ftp://user:pass@example.com/path/to/file?token=secret#fragment"
+        )
+
+    message = str(exc_info.value)
+    assert "example.com/path/to/file" in message
+    assert "token=secret" not in message
+    assert "fragment" not in message
+
+
+@pytest.mark.asyncio
+async def test_ssrf_safe_fetch_redacts_redirect_source_in_errors(monkeypatch):
+    async def fake_fetch(url):
+        return httpx.Response(
+            302,
+            headers={},
+            request=httpx.Request("GET", url),
+        )
+
+    monkeypatch.setattr(http_utils, "fetch_url_with_pinned_ip", fake_fetch)
+
+    with pytest.raises(Exception) as exc_info:
+        await http_utils.ssrf_safe_fetch("https://example.com/start?token=secret")
+
+    message = str(exc_info.value)
+    assert "example.com/start" in message
+    assert "token=secret" not in message

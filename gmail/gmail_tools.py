@@ -8,6 +8,7 @@ import logging
 import asyncio
 import base64
 import binascii
+import os
 import re
 import ssl
 import mimetypes
@@ -16,6 +17,7 @@ from pathlib import Path
 from typing import Annotated, Optional, List, Dict, Literal, Any
 from urllib.parse import urlparse
 
+import httpx
 from email.message import EmailMessage
 from email.policy import SMTP
 from email.utils import formataddr
@@ -25,7 +27,8 @@ from googleapiclient.errors import HttpError
 
 from auth.service_decorator import require_google_service
 from core.attachment_storage import get_attachment_storage, STORAGE_DIR
-from core.http_utils import ssrf_safe_fetch
+from core.config import WORKSPACE_MCP_BASE_URI, WORKSPACE_MCP_PORT
+from core.http_utils import ssrf_safe_stream
 from core.utils import (
     handle_http_errors,
     validate_file_path,
@@ -744,6 +747,53 @@ async def _fetch_thread_message_ids(service, thread_id: str) -> List[str]:
 MAX_EMAIL_ATTACHMENT_BYTES = 25 * 1024 * 1024  # 25 MB Gmail attachment limit
 
 
+def _get_trusted_attachment_origins() -> set[tuple[str, str]]:
+    """Return local origins allowed to resolve /attachments/{id} from disk."""
+    origins: set[tuple[str, str]] = set()
+    for origin in (
+        os.getenv("WORKSPACE_EXTERNAL_URL"),
+        f"{WORKSPACE_MCP_BASE_URI}:{WORKSPACE_MCP_PORT}",
+    ):
+        if not origin:
+            continue
+        parsed = urlparse(origin)
+        if parsed.scheme and parsed.netloc:
+            origins.add((parsed.scheme.lower(), parsed.netloc.lower()))
+    return origins
+
+
+def _read_attachment_bytes(file_path: Path) -> bytes:
+    """Read a local attachment after enforcing the Gmail size limit."""
+    size_bytes = file_path.stat().st_size
+    if size_bytes > MAX_EMAIL_ATTACHMENT_BYTES:
+        raise ValueError(
+            f"Attachment exceeds {MAX_EMAIL_ATTACHMENT_BYTES} bytes: {file_path.name}"
+        )
+    return file_path.read_bytes()
+
+
+async def _download_attachment_bytes(url: str) -> tuple[bytes, httpx.Response]:
+    """Download an attachment with streaming size enforcement."""
+    total_bytes = 0
+    chunks: list[bytes] = []
+
+    async with ssrf_safe_stream(url) as resp:
+        if resp.status_code != 200:
+            raise ValueError(
+                f"Failed to fetch attachment URL {url} (status {resp.status_code})"
+            )
+
+        async for chunk in resp.aiter_bytes(chunk_size=256 * 1024):
+            total_bytes += len(chunk)
+            if total_bytes > MAX_EMAIL_ATTACHMENT_BYTES:
+                raise ValueError(
+                    f"Attachment from {url} exceeds 25 MB Gmail limit ({total_bytes} bytes)"
+                )
+            chunks.append(chunk)
+
+        return b"".join(chunks), resp
+
+
 def _try_read_local_attachment(url: str) -> Optional[tuple[bytes, str, Optional[str]]]:
     """Try to resolve a URL as an MCP attachment stored on local disk.
 
@@ -754,24 +804,35 @@ def _try_read_local_attachment(url: str) -> Optional[tuple[bytes, str, Optional[
     parts = parsed.path.strip("/").split("/")
     if len(parts) != 2 or parts[0] != "attachments":
         return None
+    if parsed.netloc:
+        origin = (parsed.scheme.lower(), parsed.netloc.lower())
+        if origin not in _get_trusted_attachment_origins():
+            return None
 
     file_id = parts[1]
     storage = get_attachment_storage()
     metadata = storage.get_attachment_metadata(file_id)
-    file_path = storage.get_attachment_path(file_id)
-    if file_path is None:
-        # Metadata expired or missing — fall back to scanning the directory.
-        # Files are named ``{stem}_{uuid[:8]}{ext}`` or ``{uuid}{ext}``.
-        for candidate in STORAGE_DIR.iterdir():
-            if file_id in candidate.name:
-                file_path = candidate
-                break
-    if file_path is None:
+    if metadata is None:
+        logger.debug(
+            "Attachment metadata missing for %s; refusing local fallback under %s",
+            file_id,
+            STORAGE_DIR,
+        )
         return None
 
-    data = Path(file_path).read_bytes()
-    filename = metadata["filename"] if metadata else file_path.name
-    mime_type = metadata.get("mime_type") if metadata else None
+    file_path = storage.get_attachment_path(file_id)
+    if file_path is None:
+        logger.debug(
+            "Attachment file path missing for %s; refusing local fallback under %s",
+            file_id,
+            STORAGE_DIR,
+        )
+        return None
+
+    file_path = Path(file_path)
+    data = _read_attachment_bytes(file_path)
+    filename = metadata["filename"]
+    mime_type = metadata.get("mime_type")
     return data, filename, mime_type
 
 
@@ -804,7 +865,12 @@ async def _resolve_url_attachments(
         mime_type = att.get("mime_type")
 
         # Fast path: MCP-local attachment URL.
-        local = _try_read_local_attachment(url)
+        try:
+            local = _try_read_local_attachment(url)
+        except ValueError as exc:
+            logger.error("Failed to read local attachment URL %s: %s", url, exc)
+            resolved.append(att)
+            continue
         if local is not None:
             data, local_filename, local_mime = local
             resolved.append(
@@ -817,22 +883,11 @@ async def _resolve_url_attachments(
             continue
 
         # External URL — SSRF-safe fetch.
-        resp = await ssrf_safe_fetch(url)
-        if resp.status_code != 200:
-            logger.error(
-                "Failed to fetch attachment URL %s (status %d)", url, resp.status_code
-            )
+        try:
+            data, resp = await _download_attachment_bytes(url)
+        except ValueError as exc:
+            logger.error("Failed to fetch attachment URL %s: %s", url, exc)
             resolved.append(att)  # pass through so _prepare reports the error
-            continue
-
-        data = resp.content
-        if len(data) > MAX_EMAIL_ATTACHMENT_BYTES:
-            logger.error(
-                "Attachment from %s exceeds 25 MB Gmail limit (%d bytes)",
-                url,
-                len(data),
-            )
-            resolved.append(att)
             continue
 
         # Infer filename from URL path if not provided.
