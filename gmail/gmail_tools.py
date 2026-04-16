@@ -8,14 +8,13 @@ import logging
 import asyncio
 import base64
 import binascii
-import os
 import re
 import ssl
 import mimetypes
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Annotated, Optional, List, Dict, Literal, Any
-from urllib.parse import urlparse, urlunsplit
+from urllib.parse import unquote, urlparse, urlunsplit
 
 import httpx
 from email.message import EmailMessage
@@ -27,7 +26,7 @@ from googleapiclient.errors import HttpError
 
 from auth.service_decorator import require_google_service
 from core.attachment_storage import get_attachment_storage, STORAGE_DIR
-from core.config import WORKSPACE_MCP_BASE_URI, WORKSPACE_MCP_PORT
+from core.config import WORKSPACE_EXTERNAL_URL, WORKSPACE_MCP_BASE_URI, WORKSPACE_MCP_PORT
 from core.http_utils import ssrf_safe_stream
 from core.utils import (
     handle_http_errors,
@@ -759,7 +758,7 @@ def _get_trusted_attachment_origins() -> set[tuple[str, str]]:
     """Return local origins allowed to resolve /attachments/{id} from disk."""
     origins: set[tuple[str, str]] = set()
     for origin in (
-        os.getenv("WORKSPACE_EXTERNAL_URL"),
+        WORKSPACE_EXTERNAL_URL,
         f"{WORKSPACE_MCP_BASE_URI}:{WORKSPACE_MCP_PORT}",
     ):
         if not origin:
@@ -780,13 +779,16 @@ def _read_attachment_bytes(file_path: Path) -> bytes:
     return file_path.read_bytes()
 
 
+_ATTACHMENT_TIMEOUT = httpx.Timeout(connect=10, read=30, write=10, pool=10)
+
+
 async def _download_attachment_bytes(url: str) -> tuple[bytes, httpx.Response]:
     """Download an attachment with streaming size enforcement."""
     total_bytes = 0
     chunks: list[bytes] = []
     redacted_url = _redact_url(url)
 
-    async with ssrf_safe_stream(url) as resp:
+    async with ssrf_safe_stream(url, timeout=_ATTACHMENT_TIMEOUT) as resp:
         if resp.status_code != 200:
             raise ValueError(
                 f"Failed to fetch attachment URL {redacted_url} (status {resp.status_code})"
@@ -933,7 +935,7 @@ async def _resolve_url_attachments(
         # Infer filename from URL path if not provided.
         if not filename:
             url_path = urlparse(url).path
-            candidate = url_path.rsplit("/", 1)[-1] if url_path else ""
+            candidate = unquote(url_path.rsplit("/", 1)[-1]) if url_path else ""
             filename = candidate if candidate and "." in candidate else "attachment"
 
         # Infer MIME type from Content-Type header or filename.

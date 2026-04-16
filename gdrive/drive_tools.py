@@ -10,7 +10,7 @@ import io
 import base64
 
 from typing import Optional, List, Dict, Any, Callable, Awaitable
-from tempfile import NamedTemporaryFile
+from tempfile import NamedTemporaryFile, SpooledTemporaryFile
 from urllib.parse import urlparse
 from urllib.request import url2pathname
 from pathlib import Path
@@ -32,7 +32,7 @@ from core.utils import (
 )
 from core.server import server
 from core.config import get_transport_mode
-from core.http_utils import ssrf_safe_stream as _ssrf_safe_stream
+from core.http_utils import redact_url as _redact_url, ssrf_safe_stream as _ssrf_safe_stream
 from gdrive.drive_helpers import (
     DRIVE_QUERY_PATTERNS,
     FOLDER_MIME_TYPE,
@@ -61,11 +61,13 @@ async def _stream_url_with_validation(
     """Stream a remote file with shared status and size validation."""
     total_bytes = 0
 
+    redacted_url = _redact_url(url)
+
     async with _ssrf_safe_stream(url) as resp:
         if resp.status_code != 200:
             request = getattr(resp, "request", None) or httpx.Request("GET", url)
             raise httpx.HTTPStatusError(
-                f"Failed to fetch file from URL: {url} (status {resp.status_code})",
+                f"Failed to fetch file from URL: {redacted_url} (status {resp.status_code})",
                 request=request,
                 response=resp,
             )
@@ -75,7 +77,7 @@ async def _stream_url_with_validation(
             total_bytes += len(chunk)
             if total_bytes > MAX_DOWNLOAD_BYTES:
                 raise ValueError(
-                    f"Download from {url} exceeded {MAX_DOWNLOAD_BYTES} byte limit "
+                    f"Download from {redacted_url} exceeded {MAX_DOWNLOAD_BYTES} byte limit "
                     f"({total_bytes} bytes)"
                 )
             if write_chunk is not None:
@@ -776,7 +778,16 @@ async def create_drive_file(
         elif parsed_url.scheme in ("http", "https"):
             # when running in stateless mode, deployment may not have access to local file system
             if is_stateless_mode():
-                file_data, content_type = await _download_url_to_bytes(fileUrl)
+                spool = SpooledTemporaryFile(max_size=5 * 1024 * 1024)
+
+                async def _write_spool(chunk: bytes) -> None:
+                    await asyncio.to_thread(spool.write, chunk)
+
+                _total, content_type = await _stream_url_with_validation(
+                    fileUrl, _write_spool
+                )
+                await asyncio.to_thread(spool.seek, 0)
+
                 # Try to get MIME type from Content-Type header
                 if content_type and content_type != "application/octet-stream":
                     mime_type = content_type
@@ -786,7 +797,7 @@ async def create_drive_file(
                     )
 
                 media = MediaIoBaseUpload(
-                    io.BytesIO(file_data),
+                    spool,
                     mimetype=mime_type,
                     resumable=True,
                     chunksize=UPLOAD_CHUNK_SIZE_BYTES,
@@ -802,6 +813,7 @@ async def create_drive_file(
                     )
                     .execute
                 )
+                spool.close()
             else:
                 # Stream download to temp file with SSRF protection, then upload
                 with NamedTemporaryFile() as temp_file:
@@ -1053,12 +1065,19 @@ async def import_to_google_doc(
             f"[import_to_google_doc] Downloaded from URL: {len(file_data)} bytes"
         )
 
-        # Re-detect format from URL if not specified
+        # Prefer the Content-Type from the download; fall back to URL-based detection
         if not source_format:
-            source_mime_type = _detect_source_format(file_url)
-            logger.info(
-                f"[import_to_google_doc] Re-detected from URL: {source_mime_type}"
-            )
+            ct_base = (_content_type or "").split(";", 1)[0].strip()
+            if ct_base and ct_base != "application/octet-stream":
+                source_mime_type = ct_base
+                logger.info(
+                    f"[import_to_google_doc] Using Content-Type from response: {source_mime_type}"
+                )
+            else:
+                source_mime_type = _detect_source_format(file_url)
+                logger.info(
+                    f"[import_to_google_doc] Detected from URL path: {source_mime_type}"
+                )
 
     # Upload with conversion
     media = MediaIoBaseUpload(

@@ -229,7 +229,9 @@ async def ssrf_safe_fetch(url: str) -> httpx.Response:
 
 
 @asynccontextmanager
-async def ssrf_safe_stream(url: str) -> AsyncIterator[httpx.Response]:
+async def ssrf_safe_stream(
+    url: str, *, timeout: Optional[httpx.Timeout] = None
+) -> AsyncIterator[httpx.Response]:
     """
     SSRF-safe streaming fetch: validates each redirect target against private
     networks, then streams the final response body without buffering it all
@@ -260,7 +262,9 @@ async def ssrf_safe_stream(url: str) -> AsyncIterator[httpx.Response]:
         resp: Optional[httpx.Response] = None
         for resolved_ip in resolved_ips:
             pinned_url = build_pinned_url(parsed, resolved_ip)
-            client = httpx.AsyncClient(follow_redirects=False, trust_env=False)
+            client = httpx.AsyncClient(
+                follow_redirects=False, trust_env=False, timeout=timeout
+            )
             try:
                 request = client.build_request(
                     "GET",

@@ -53,6 +53,6 @@ async def test_download_url_to_bytes_enforces_max_size(monkeypatch):
 
     with pytest.raises(
         ValueError,
-        match="Download from https://example.com/file.bin exceeded 6 byte limit",
+        match=r"Download from example\.com/file\.bin exceeded 6 byte limit",
     ):
         await drive_tools._download_url_to_bytes("https://example.com/file.bin")

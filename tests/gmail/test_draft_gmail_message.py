@@ -95,7 +95,7 @@ class _FakeStreamResponse:
 
 def _mock_stream_response(response):
     @asynccontextmanager
-    async def _stream(_url):
+    async def _stream(_url, **_kwargs):
         yield response
 
     return _stream
