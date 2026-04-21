@@ -102,7 +102,7 @@ def _get_allowed_file_dirs() -> list[Path]:
     env_val = os.environ.get(_ALLOWED_FILE_DIRS_ENV)
     if env_val:
         return [
-            Path(p).expanduser().resolve()
+            Path(p.strip()).expanduser().resolve()
             for p in env_val.split(os.pathsep)
             if p.strip()
         ]
@@ -137,8 +137,10 @@ def validate_file_path(file_path: str) -> Path:
     resolved_str = str(resolved)
     file_name = resolved.name.lower()
 
+    path_parts = [part.lower() for part in resolved.parts]
+
     # Block .env files and variants (.env, .env.local, .env.production, etc.)
-    if file_name == ".env" or file_name.startswith(".env."):
+    if any(part == ".env" or part.startswith(".env.") for part in path_parts):
         raise ValueError(
             f"Access to '{resolved_str}' is not allowed: "
             ".env files may contain secrets and cannot be read, uploaded, or attached."
@@ -161,16 +163,20 @@ def validate_file_path(file_path: str) -> Path:
                 "path is in a restricted system location."
             )
 
-    # Block sensitive directories that commonly contain credentials/keys
-    sensitive_dirs = (
-        ".ssh",
-        ".aws",
+    # Block sensitive directories that commonly contain credentials/keys.
+    if ".ssh" in path_parts or ".aws" in path_parts:
+        raise ValueError(
+            f"Access to '{resolved_str}' is not allowed: "
+            "path is in a directory that commonly contains secrets or credentials."
+        )
+
+    home = Path.home()
+    sensitive_home_dirs = (
         ".kube",
         ".gnupg",
         ".config/gcloud",
     )
-    for sensitive_dir in sensitive_dirs:
-        home = Path.home()
+    for sensitive_dir in sensitive_home_dirs:
         blocked = home / sensitive_dir
         if resolved == blocked or str(resolved).startswith(str(blocked) + "/"):
             raise ValueError(

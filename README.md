@@ -137,7 +137,7 @@ This server sends no data anywhere except Google's APIs, on behalf of the authen
 - **You control the network** — deploy behind your reverse proxy, in your VPC, on your own terms
 - **No third-party services** — no intermediary servers, no token relays, no hosted backends
 - **Stateless mode** — zero disk writes for locked-down container environments
-- **Sensitive path blocking** — `.env`, `.ssh/`, `.aws/`, and credential files are blocked regardless of configuration
+- **Sensitive path blocking** — `.env` files, `.ssh/`, `.aws/`, and credential files are blocked regardless of configuration
 
 Full dependency tree in `pyproject.toml`, pinned in `uv.lock`.
 
