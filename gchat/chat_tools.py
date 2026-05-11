@@ -177,6 +177,54 @@ async def list_spaces(
     return "\n".join(output)
 
 
+
+async def _fetch_reactions(chat_service, people_service, msg_name):
+    """Fetch all reactions for a message with per-user display names.
+
+    Returns a dict like {"\U0001f389": ["Ben Dortimer", "Alex Dortimer"]} or None on error.
+    Added by per-user reactions patch.
+    """
+    try:
+        resp = await asyncio.to_thread(
+            chat_service.spaces()
+            .messages()
+            .reactions()
+            .list(parent=msg_name, pageSize=200)
+            .execute
+        )
+        reactions = resp.get("reactions", [])
+        if not reactions:
+            return {}
+        # Resolve unique users in parallel via existing _resolve_sender.
+        user_lookup = {}
+        for r in reactions:
+            u = r.get("user", {})
+            k = u.get("name", "")
+            if k and k not in user_lookup:
+                user_lookup[k] = u
+        if user_lookup:
+            resolved = await asyncio.gather(
+                *[_resolve_sender(people_service, u) for u in user_lookup.values()]
+            )
+            user_map = dict(zip(user_lookup.keys(), resolved))
+        else:
+            user_map = {}
+        by_emoji = {}
+        for r in reactions:
+            emoji = r.get("emoji", {})
+            symbol = emoji.get("unicode", "")
+            if not symbol:
+                ce = emoji.get("customEmoji", {})
+                symbol = f":{ce.get('uid', '?')}:"
+            u = r.get("user", {})
+            name = user_map.get(u.get("name", ""), u.get("displayName", "Unknown"))
+            by_emoji.setdefault(symbol, []).append(name)
+        return by_emoji
+    except Exception as e:
+        logger.warning(f"[_fetch_reactions] Failed for {msg_name}: {e}")
+        return None
+
+
 @server.tool()
 @require_multiple_services(
     [
@@ -275,19 +323,27 @@ async def get_messages(
         thread = msg.get("thread", {})
         if msg.get("threadReply") and thread.get("name"):
             output.append(f"  [thread: {thread['name']}]")
-        # Show emoji reactions
-        reactions = msg.get("emojiReactionSummaries", [])
-        if reactions:
-            parts = []
-            for r in reactions:
-                emoji = r.get("emoji", {})
-                symbol = emoji.get("unicode", "")
-                if not symbol:
-                    ce = emoji.get("customEmoji", {})
-                    symbol = f":{ce.get('uid', '?')}:"
-                count = r.get("reactionCount", 0)
-                parts.append(f"{symbol}x{count}")
-            output.append(f"  [reactions: {', '.join(parts)}]")
+        # Show emoji reactions WITH user identities (per-user reactions patch).
+        summary_reactions = msg.get("emojiReactionSummaries", [])
+        if summary_reactions:
+            per_user = await _fetch_reactions(chat_service, people_service, msg_name)
+            if per_user:
+                parts = []
+                for symbol, users in per_user.items():
+                    parts.append(f"{symbol} by {', '.join(users)}")
+                output.append(f"  [reactions: {'; '.join(parts)}]")
+            else:
+                # Fallback to aggregate counts if the per-user fetch failed.
+                parts = []
+                for r in summary_reactions:
+                    emoji = r.get("emoji", {})
+                    symbol = emoji.get("unicode", "")
+                    if not symbol:
+                        ce = emoji.get("customEmoji", {})
+                        symbol = f":{ce.get('uid', '?')}:"
+                    count = r.get("reactionCount", 0)
+                    parts.append(f"{symbol}x{count}")
+                output.append(f"  [reactions: {', '.join(parts)}]")
         output.append(f"  (Message ID: {msg_name})\n")
 
     return "\n".join(output)
