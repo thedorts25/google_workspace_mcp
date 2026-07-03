@@ -21,21 +21,24 @@ gmail:
     - start_google_auth
 
 drive:
+  # MICADOR (3 Jul 2026): read-only on the org connector. Write/permission tools
+  # parked in 'complete' (not loaded at TOOL_TIER=extended); scope map requests
+  # drive.readonly only, so they'd 403 anyway. Restore upstream layout to undo.
   core:
     - search_drive_files
     - get_drive_file_content
     - get_drive_file_download_url
+  extended:
+    - list_drive_items
+  complete:
     - create_drive_file
     - create_drive_folder
     - import_to_google_doc
     - get_drive_shareable_link
-  extended:
-    - list_drive_items
     - copy_drive_file
     - update_drive_file
     - manage_drive_access
     - set_drive_file_permissions
-  complete:
     - get_drive_file_permissions
     - check_drive_file_public_access
 
@@ -84,6 +87,8 @@ sheets:
     - get_spreadsheet_info
     - format_sheet_range
     - list_sheet_tables
+    - add_sheet
+    - duplicate_sheet
   complete:
     - create_sheet
     - append_table_rows

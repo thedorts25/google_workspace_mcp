@@ -1228,6 +1228,139 @@ async def create_sheet(
     return text_output
 
 
+
+@server.tool()
+@handle_http_errors("add_sheet", service_type="sheets")
+@require_google_service("sheets", "sheets_write")
+async def add_sheet(
+    service,
+    user_google_email: str,
+    spreadsheet_id: str,
+    sheet_name: str,
+    index: Optional[int] = None,
+    row_count: int = 1000,
+    column_count: int = 26,
+) -> str:
+    """
+    Adds a new blank sheet (tab) to an existing spreadsheet.
+
+    Unlike create_spreadsheet (which makes a whole new file), this adds a tab
+    to a spreadsheet that already exists. Use this when you need an extra month
+    tab, a performance tab, etc.
+
+    Args:
+        user_google_email (str): The user's Google email address. Required.
+        spreadsheet_id (str): The ID of the spreadsheet. Required.
+        sheet_name (str): The title of the new tab. Required.
+        index (Optional[int]): Zero-based position for the new tab. If omitted,
+            the tab is appended at the end.
+        row_count (int): Number of rows for the new tab. Defaults to 1000.
+        column_count (int): Number of columns for the new tab. Defaults to 26.
+
+    Returns:
+        str: Confirmation message including the new sheet's ID.
+    """
+    logger.info(
+        f"[add_sheet] Invoked. Email: '{user_google_email}', Spreadsheet: {spreadsheet_id}, Sheet: {sheet_name}"
+    )
+
+    add_sheet_props = {
+        "title": sheet_name,
+        "gridProperties": {"rowCount": row_count, "columnCount": column_count},
+    }
+    if index is not None:
+        add_sheet_props["index"] = index
+
+    request_body = {"requests": [{"addSheet": {"properties": add_sheet_props}}]}
+
+    response = await asyncio.to_thread(
+        service.spreadsheets()
+        .batchUpdate(spreadsheetId=spreadsheet_id, body=request_body)
+        .execute
+    )
+
+    new_props = response["replies"][0]["addSheet"]["properties"]
+    new_sheet_id = new_props["sheetId"]
+
+    text_output = (
+        f"Successfully added sheet '{sheet_name}' (ID: {new_sheet_id}) "
+        f"to spreadsheet {spreadsheet_id} for {user_google_email}."
+    )
+
+    logger.info(
+        f"Successfully added sheet for {user_google_email}. Sheet ID: {new_sheet_id}"
+    )
+    return text_output
+
+
+@server.tool()
+@handle_http_errors("duplicate_sheet", service_type="sheets")
+@require_google_service("sheets", "sheets_write")
+async def duplicate_sheet(
+    service,
+    user_google_email: str,
+    spreadsheet_id: str,
+    source_sheet_id: int,
+    new_sheet_name: str,
+    insert_index: Optional[int] = None,
+) -> str:
+    """
+    Duplicates an existing sheet (tab) within the same spreadsheet, preserving
+    EVERYTHING: cell values, formulas, formatting, column widths, merged cells,
+    data validation (dropdowns) and conditional formatting rules.
+
+    This is the faithful "right-click > Duplicate" equivalent. Use it to clone a
+    template month/tab and then relabel it, instead of rebuilding a tab cell by
+    cell (which loses dropdowns and conditional formatting).
+
+    Find source_sheet_id via get_spreadsheet_info (each sheet's "ID").
+
+    Args:
+        user_google_email (str): The user's Google email address. Required.
+        spreadsheet_id (str): The ID of the spreadsheet. Required.
+        source_sheet_id (int): The sheetId of the tab to duplicate. Required.
+        new_sheet_name (str): The title for the duplicated tab. Required.
+        insert_index (Optional[int]): Zero-based position for the new tab. If
+            omitted, it is placed directly after the source tab.
+
+    Returns:
+        str: Confirmation message including the new sheet's ID.
+    """
+    logger.info(
+        f"[duplicate_sheet] Invoked. Email: '{user_google_email}', Spreadsheet: {spreadsheet_id}, "
+        f"Source sheetId: {source_sheet_id}, New name: {new_sheet_name}"
+    )
+
+    duplicate_req = {
+        "sourceSheetId": source_sheet_id,
+        "newSheetName": new_sheet_name,
+    }
+    if insert_index is not None:
+        duplicate_req["insertSheetIndex"] = insert_index
+
+    request_body = {"requests": [{"duplicateSheet": duplicate_req}]}
+
+    response = await asyncio.to_thread(
+        service.spreadsheets()
+        .batchUpdate(spreadsheetId=spreadsheet_id, body=request_body)
+        .execute
+    )
+
+    new_props = response["replies"][0]["duplicateSheet"]["properties"]
+    new_sheet_id = new_props["sheetId"]
+
+    text_output = (
+        f"Successfully duplicated sheet {source_sheet_id} as '{new_sheet_name}' "
+        f"(ID: {new_sheet_id}) in spreadsheet {spreadsheet_id} for {user_google_email}. "
+        f"All formatting, dropdowns and conditional formatting were preserved."
+    )
+
+    logger.info(
+        f"Successfully duplicated sheet for {user_google_email}. New sheet ID: {new_sheet_id}"
+    )
+    return text_output
+
+
 def _to_extended_value(val) -> dict:
     """Convert a Python value to a Sheets API ExtendedValue dict."""
     if isinstance(val, bool):

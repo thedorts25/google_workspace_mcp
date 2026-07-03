@@ -77,6 +77,45 @@ class WellKnownCacheControlMiddleware:
 well_known_cache_control_middleware = Middleware(WellKnownCacheControlMiddleware)
 
 
+class HeadConsentNoOpMiddleware:
+    """Return an empty 200 for ``HEAD /consent`` without invoking the consent handler.
+
+    FastMCP 3.2.4 registers ``/consent`` with ``methods=["GET", "POST"]``; Starlette
+    adds an implicit HEAD alias that dispatches to the same handler. That handler
+    (``_show_consent_page``) unconditionally generates a fresh CSRF token and
+    overwrites the one stored against the OAuth transaction. If a browser prefetcher,
+    link preview, or extension fires HEAD between the user's GET and POST, the CSRF
+    rotates and the POST fails with "Invalid or expired consent token". HEAD must be
+    side-effect free, so short-circuit it here before it reaches the route.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if (
+            scope["type"] == "http"
+            and scope.get("method") == "HEAD"
+            and scope.get("path", "").rstrip("/") == "/consent"
+        ):
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 200,
+                    "headers": [
+                        (b"content-length", b"0"),
+                        (b"cache-control", b"no-store"),
+                    ],
+                }
+            )
+            await send({"type": "http.response.body", "body": b""})
+            return
+        await self.app(scope, receive, send)
+
+
+head_consent_noop_middleware = Middleware(HeadConsentNoOpMiddleware)
+
+
 def _compute_scope_fingerprint() -> str:
     """Compute a short hash of the current scope configuration for cache-busting."""
     scopes_str = ",".join(sorted(get_current_scopes()))
@@ -90,14 +129,18 @@ class SecureFastMCP(FastMCP):
         app = super().http_app(**kwargs)
 
         # Add middleware in order (first added = outermost layer)
-        app.user_middleware.insert(0, well_known_cache_control_middleware)
+        # HEAD /consent must be neutralised before routing so it cannot rotate CSRF.
+        app.user_middleware.insert(0, head_consent_noop_middleware)
+        app.user_middleware.insert(1, well_known_cache_control_middleware)
 
         # Session Management - extracts session info for MCP context
-        app.user_middleware.insert(1, session_middleware)
+        app.user_middleware.insert(2, session_middleware)
 
         # Rebuild middleware stack
         app.middleware_stack = app.build_middleware_stack()
-        logger.info("Added middleware stack: WellKnownCacheControl, Session Management")
+        logger.info(
+            "Added middleware stack: HeadConsentNoOp, WellKnownCacheControl, Session Management"
+        )
         return app
 
     async def list_tools(self, *, run_middleware: bool = True):
@@ -436,6 +479,72 @@ def configure_server_for_http():
                     logger.warning(
                         "OAuth 2.1: Disk storage requested but dependencies not available (%s). "
                         "Falling back to default storage.",
+                        exc,
+                    )
+            elif storage_backend == "firestore":
+                try:
+                    from key_value.aio.stores.firestore import FirestoreStore
+
+                    firestore_project = (
+                        os.getenv(
+                            "WORKSPACE_MCP_OAUTH_PROXY_FIRESTORE_PROJECT", ""
+                        ).strip()
+                        or os.getenv("GOOGLE_CLOUD_PROJECT", "").strip()
+                        or None
+                    )
+                    firestore_database = (
+                        os.getenv(
+                            "WORKSPACE_MCP_OAUTH_PROXY_FIRESTORE_DATABASE", ""
+                        ).strip()
+                        or None
+                    )
+                    firestore_collection = (
+                        os.getenv(
+                            "WORKSPACE_MCP_OAUTH_PROXY_FIRESTORE_COLLECTION", ""
+                        ).strip()
+                        or "oauth_proxy"
+                    )
+
+                    # AsyncClient picks up Application Default Credentials on Cloud Run
+                    # (the service account), so no key file is needed.
+                    client_storage = FirestoreStore(
+                        project=firestore_project,
+                        database=firestore_database,
+                        default_collection=firestore_collection,
+                    )
+
+                    jwt_signing_key = validate_and_derive_jwt_key(
+                        jwt_signing_key_override, config.client_secret
+                    )
+                    storage_encryption_key = derive_jwt_key(
+                        high_entropy_material=jwt_signing_key.decode(),
+                        salt="fastmcp-storage-encryption-key",
+                    )
+                    client_storage = FernetEncryptionWrapper(
+                        key_value=client_storage,
+                        fernet=Fernet(key=storage_encryption_key),
+                    )
+                    logger.info(
+                        "OAuth 2.1: Using FirestoreStore for FastMCP OAuth proxy client_storage "
+                        "(project=%s, database=%s, collection=%s)",
+                        firestore_project or "(inferred)",
+                        firestore_database or "(default)",
+                        firestore_collection,
+                    )
+                    logger.info(
+                        "OAuth 2.1: Applied Fernet encryption wrapper to Firestore client_storage "
+                        "(key derived from FASTMCP_SERVER_AUTH_GOOGLE_JWT_SIGNING_KEY or GOOGLE_OAUTH_CLIENT_SECRET)."
+                    )
+                except ImportError as exc:
+                    logger.warning(
+                        "OAuth 2.1: Firestore client_storage requested but dependencies are not installed (%s). "
+                        "Install 'workspace-mcp[firestore]' (or 'py-key-value-aio[firestore]'). "
+                        "Falling back to default storage.",
+                        exc,
+                    )
+                except ValueError as exc:
+                    logger.warning(
+                        "OAuth 2.1: Invalid Firestore configuration; falling back to default storage (%s).",
                         exc,
                     )
             elif storage_backend == "memory":

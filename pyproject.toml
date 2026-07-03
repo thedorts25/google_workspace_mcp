@@ -64,6 +64,9 @@ workspace-cli = "core.cli:main"
 disk = [
     "py-key-value-aio[filetree]>=0.3.0",
 ]
+firestore = [
+    "py-key-value-aio[firestore]>=0.3.0",
+]
 valkey = [
     "py-key-value-aio[valkey]>=0.3.0",
 ]
@@ -88,6 +91,9 @@ dev = [
 [dependency-groups]
 disk = [
     "py-key-value-aio[filetree]>=0.3.0",
+]
+firestore = [
+    "py-key-value-aio[firestore]>=0.3.0",
 ]
 valkey = [
     "py-key-value-aio[valkey]>=0.3.0",

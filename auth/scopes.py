@@ -188,7 +188,7 @@ SCRIPT_SCOPES = [
 # Tool-to-scopes mapping
 TOOL_SCOPES_MAP = {
     "gmail": GMAIL_SCOPES,
-    "drive": DRIVE_SCOPES,
+    "drive": [DRIVE_READONLY_SCOPE],  # MICADOR: read-only Drive on org connector (3 Jul 2026)
     "calendar": CALENDAR_SCOPES,
     "docs": DOCS_SCOPES,
     "sheets": SHEETS_SCOPES,
