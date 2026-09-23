@@ -2233,3 +2233,8 @@ async def set_drive_file_permissions(
     output_parts.extend(["", f"View link: {file_metadata.get('webViewLink', 'N/A')}"])
 
     return "\n".join(output_parts)
+
+
+# MICADOR CUSTOM: Company Brain tools (write_drive_text_file, get_drive_file_state,
+# list_drive_file_revisions). One-line include; the module is Micador-owned.
+from gdrive import micador_brain_tools  # noqa: E402,F401

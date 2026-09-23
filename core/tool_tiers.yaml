@@ -21,15 +21,25 @@ gmail:
     - start_google_auth
 
 drive:
-  # MICADOR (3 Jul 2026): read-only on the org connector. Write/permission tools
-  # parked in 'complete' (not loaded at TOOL_TIER=extended); scope map requests
-  # drive.readonly only, so they'd 403 anyway. Restore upstream layout to undo.
+  # MICADOR (Sep 2026): Company Brain writes. Loaded (TOOL_TIER=extended): read
+  # tools + Micador brain tools only. Every brain write is fenced to
+  # MICADOR_BRAIN_WRITE_ROOTS (fail closed if unset). Still parked in 'complete'
+  # (never loaded): generic create/update/copy/import/share/permission tools, so
+  # no trash, move, share or permission change is possible through the connector.
+  # Previous (3 Jul 2026): read-only, all write tools parked.
   core:
     - search_drive_files
     - get_drive_file_content
     - get_drive_file_download_url
   extended:
     - list_drive_items
+    - get_drive_file_state
+    - list_drive_file_revisions
+    - create_brain_file
+    - create_brain_folder
+    - write_drive_text_file
+    - restore_drive_file_revision
+    - pin_drive_file_revision
   complete:
     - create_drive_file
     - create_drive_folder

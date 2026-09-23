@@ -185,10 +185,26 @@ SCRIPT_SCOPES = [
     DRIVE_FILE_SCOPE,  # Required for list/delete script projects (uses Drive API)
 ]
 
+# MICADOR CUSTOM (Sep 2026): Drive scope for the Company Brain, set per deployment.
+#   MICADOR_DRIVE_WRITE_SCOPE=drive.file  (default) drive.readonly + drive.file
+#   MICADOR_DRIVE_WRITE_SCOPE=drive       full Drive (covers readonly + file)
+#   MICADOR_DRIVE_WRITE_SCOPE=readonly    the 3 Jul 2026 read-only behaviour
+# Write tools are still fenced to MICADOR_BRAIN_WRITE_ROOTS in gdrive/micador_brain_tools.py.
+def _micador_drive_scopes():
+    import os as _os
+
+    choice = _os.getenv("MICADOR_DRIVE_WRITE_SCOPE", "drive.file").strip().lower()
+    if choice == "drive":
+        return [DRIVE_SCOPE]
+    if choice == "readonly":
+        return [DRIVE_READONLY_SCOPE]
+    return [DRIVE_READONLY_SCOPE, DRIVE_FILE_SCOPE]
+
+
 # Tool-to-scopes mapping
 TOOL_SCOPES_MAP = {
     "gmail": GMAIL_SCOPES,
-    "drive": [DRIVE_READONLY_SCOPE],  # MICADOR: read-only Drive on org connector (3 Jul 2026)
+    "drive": _micador_drive_scopes(),  # MICADOR: see _micador_drive_scopes (Sep 2026). Was drive.readonly (3 Jul 2026)
     "calendar": CALENDAR_SCOPES,
     "docs": DOCS_SCOPES,
     "sheets": SHEETS_SCOPES,
